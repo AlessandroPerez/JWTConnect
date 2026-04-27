@@ -82,6 +82,9 @@ class JWK:
                     "EdDSA",
                     "Ed25519",
                     "Ed448",
+                    "ML-DSA-44",
+                    "ML-DSA-65",
+                    "ML-DSA-87",
                     "none",
                 ]:
                     raise UnsupportedAlgorithm(f"Unknown algorithm: {alg}")
@@ -103,6 +106,9 @@ class JWK:
                     "EdDSA",
                     "Ed25519",
                     "Ed448",
+                    "ML-DSA-44",
+                    "ML-DSA-65",
+                    "ML-DSA-87",
                     "none",
                     "RSA1_5",
                     "RSA-OAEP",

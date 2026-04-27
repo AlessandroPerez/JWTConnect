@@ -50,6 +50,8 @@ def alg2keytype(alg):
         return "EC"
     elif alg == "EdDSA":
         return "OKP"
+    elif alg.startswith("ML-DSA"):
+        return "AKP"
     else:
         return None
 

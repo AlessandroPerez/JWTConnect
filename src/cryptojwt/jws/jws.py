@@ -18,6 +18,12 @@ from .pss import PSSSigner
 from .rsa import RSASigner
 from .utils import alg2keytype
 
+# Try to import ML-DSA signer (requires cryptography>=47.0.0 with BoringSSL/AWS-LC)
+try:
+    from .mldsa import MLDSASigner, MLDSA_AVAILABLE
+except ImportError:
+    MLDSA_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 KDESC = ["use", "kid", "kty"]
@@ -41,6 +47,14 @@ SIGNER_ALGS = {
     "Ed448": EDDSASigner("Ed448"),
     "none": None,
 }
+
+# Add ML-DSA algorithms if available
+if MLDSA_AVAILABLE:
+    SIGNER_ALGS.update({
+        "ML-DSA-44": MLDSASigner("ML-DSA-44"),
+        "ML-DSA-65": MLDSASigner("ML-DSA-65"),
+        "ML-DSA-87": MLDSASigner("ML-DSA-87"),
+    })
 
 
 class JWSig(SimpleJWT):

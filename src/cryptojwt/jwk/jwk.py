@@ -12,6 +12,12 @@ from .hmac import SYMKey
 from .okp import OKPKey
 from .rsa import RSAKey
 
+# Try to import AKPKey (requires cryptography>=47.0.0 with BoringSSL/AWS-LC)
+try:
+    from .akp import AKPKey, MLDSA_AVAILABLE as AKP_AVAILABLE
+except ImportError:
+    AKP_AVAILABLE = False
+
 EC_PUBLIC_REQUIRED = frozenset(["crv", "x", "y"])
 EC_PUBLIC = EC_PUBLIC_REQUIRED
 EC_PRIVATE_REQUIRED = frozenset(["d"])
@@ -29,6 +35,12 @@ RSA_PUBLIC = RSA_PUBLIC_REQUIRED
 RSA_PRIVATE_REQUIRED = frozenset(["p", "q", "d"])
 RSA_PRIVATE_OPTIONAL = frozenset(["qi", "dp", "dq"])
 RSA_PRIVATE = RSA_PRIVATE_REQUIRED | RSA_PRIVATE_OPTIONAL
+
+AKP_PUBLIC_REQUIRED = frozenset(["alg", "pub"])
+AKP_PUBLIC = AKP_PUBLIC_REQUIRED
+AKP_PRIVATE_REQUIRED = frozenset(["priv"])
+AKP_PRIVATE_OPTIONAL = frozenset()
+AKP_PRIVATE = AKP_PRIVATE_REQUIRED | AKP_PRIVATE_OPTIONAL
 
 
 def ensure_ec_params(jwk_dict, private):
@@ -59,6 +71,16 @@ def ensure_rsa_params(jwk_dict, private):
     else:
         required = RSA_PUBLIC_REQUIRED
     return ensure_params("RSA", provided, required)
+
+
+def ensure_akp_params(jwk_dict, private):
+    """Ensure all required AKP parameters are present in dictionary"""
+    provided = frozenset(jwk_dict.keys())
+    if private is not None and private:
+        required = AKP_PUBLIC_REQUIRED | AKP_PRIVATE_REQUIRED
+    else:
+        required = AKP_PUBLIC_REQUIRED
+    return ensure_params("AKP", provided, required)
 
 
 def ensure_params(kty, provided, required):
@@ -161,6 +183,20 @@ def key_from_jwk_dict(jwk_dict, private=None):
             raise MissingValue('There has to be one of "k" or "key" in a symmetric key')
 
         return SYMKey(**_jwk_dict)
+    elif _jwk_dict["kty"] == "AKP":
+        if not AKP_AVAILABLE:
+            raise UnsupportedAlgorithm(
+                "AKP keys require cryptography>=47.0.0 compiled with BoringSSL or AWS-LC"
+            )
+
+        ensure_akp_params(_jwk_dict, private)
+
+        if private is not None and not private:
+            # remove private components
+            for v in AKP_PRIVATE:
+                _jwk_dict.pop(v, None)
+
+        return AKPKey(**_jwk_dict)
     else:
         raise UnknownKeyType
 
@@ -182,6 +218,15 @@ def jwk_wrap(key, use="", kid=""):
         kspec = ECKey(use=use, kid=kid).load_key(key)
     elif isinstance(key, (ed25519.Ed25519PublicKey, ed448.Ed448PublicKey)):
         kspec = OKPKey(use=use, kid=kid).load_key(key)
+    elif AKP_AVAILABLE:
+        # Check for ML-DSA key types
+        from .akp import MLDSA_ALG_MAP
+        for alg_name, (priv_cls, pub_cls) in MLDSA_ALG_MAP.items():
+            if isinstance(key, (priv_cls, pub_cls)):
+                kspec = AKPKey(use=use, kid=kid).load_key(key)
+                break
+        else:
+            raise Exception("Unknown key type:key=" + str(type(key)))
     else:
         raise Exception("Unknown key type:key=" + str(type(key)))
 
