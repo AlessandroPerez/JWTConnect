@@ -24,6 +24,7 @@ from .exception import (
     UnsupportedECurve,
     UpdateFailed,
 )
+from .jwk.akp import AKPKey, new_akp_key, MLDSA_AVAILABLE
 from .jwk.ec import ECKey, new_ec_key
 from .jwk.hmac import SYMKey
 from .jwk.jwk import dump_jwk, import_jwk
@@ -46,7 +47,7 @@ JWKS_CONTENT_TYPES = set(["application/json", "application/jwk-set+json"])
 #     raise excep(_err, 'application/json')
 
 # Make sure the keys are all uppercase
-K2C = {"RSA": RSAKey, "EC": ECKey, "oct": SYMKey, "OKP": OKPKey}
+K2C = {"RSA": RSAKey, "EC": ECKey, "oct": SYMKey, "OKP": OKPKey, "AKP": AKPKey}
 
 MAP = {"dec": "enc", "enc": "enc", "ver": "sig", "sig": "sig"}
 
@@ -173,6 +174,29 @@ def okp_init(spec):
     else:
         eck = new_okp_key(crv=curve)
         _kb.append(eck)
+
+    return _kb
+
+
+def akp_init(spec):
+    """
+    Initiate a key bundle with an Algorithm Key Pair (ML-DSA).
+
+    :param spec: Key specifics of the form::
+        {"type": "AKP", "alg": "ML-DSA-65", "use": ["sig"]}
+
+    :return: A KeyBundle instance
+    """
+    alg = spec.get("alg", "ML-DSA-65")
+
+    _kb = KeyBundle(keytype="AKP")
+    if "use" in spec:
+        for use in spec["use"]:
+            akpk = new_akp_key(alg=alg, use=use)
+            _kb.append(akpk)
+    else:
+        akpk = new_akp_key(alg=alg)
+        _kb.append(akpk)
 
     return _kb
 
@@ -674,6 +698,38 @@ class KeyBundle:
         """Add a list of keys to the list of keys."""
         self._keys.extend(keys)
 
+    def generate(self, **kwargs):
+        """
+        Generate a new key and add it to the bundle.
+
+        :param kwargs: Key generation parameters
+            For AKP keys: alg (ML-DSA-44, ML-DSA-65, ML-DSA-87)
+            For RSA keys: size, exp
+            For EC keys: crv
+            For OKP keys: crv
+        """
+        if self.keytype == "AKP":
+            alg = kwargs.get("alg", "ML-DSA-65")
+            if alg not in ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]:
+                raise ValueError(f"Unknown AKP algorithm: {alg}")
+            if not MLDSA_AVAILABLE:
+                raise ValueError("ML-DSA not available - requires cryptography with BoringSSL/AWS-LC")
+            key = new_akp_key(alg=alg, use=self.keyusage)
+        elif self.keytype == "RSA":
+            keysize = kwargs.get("size", 2048)
+            public_exponent = kwargs.get("exp", 65537)
+            key = new_rsa_key(public_exponent=public_exponent, key_size=keysize, use=self.keyusage)
+        elif self.keytype == "EC":
+            crv = kwargs.get("crv", "P-256")
+            key = new_ec_key(crv=crv, use=self.keyusage)
+        elif self.keytype == "OKP":
+            crv = kwargs.get("crv", "Ed25519")
+            key = new_okp_key(crv=crv, use=self.keyusage)
+        else:
+            raise ValueError(f"Key generation not supported for key type: {self.keytype}")
+        
+        self.append(key)
+
     @keys_writer
     def remove(self, key):
         """
@@ -1034,6 +1090,17 @@ def build_key_bundle(key_conf, kid_template=""):
                 _bundle = okp_init(spec)
         elif typ.lower() == "oct":
             _bundle = sym_init(spec)
+        elif typ == "AKP":
+            if "key" in spec and spec["key"]:
+                if os.path.isfile(spec["key"]):
+                    _bundle = KeyBundle(
+                        source="file://{}".format(spec["key"]),
+                        fileformat="jwks",
+                        keytype=typ,
+                        keyusage=spec["use"],
+                    )
+            else:
+                _bundle = akp_init(spec)
         else:
             continue
 
@@ -1189,6 +1256,10 @@ def key_diff(key_bundle, key_defs):
                 # special test only for EC and OKP keys
                 if key.crv != key_def["crv"]:
                     continue
+            elif key.kty == "AKP":
+                # special test for AKP keys
+                if key.alg != key_def.get("alg", "ML-DSA-65"):
+                    continue
 
             try:
                 _kid = key_def["kid"]
@@ -1262,6 +1333,8 @@ def key_rollover(bundle):
         _spec = {"type": key.kty, "use": [key.use]}
         if key.kty in ["EC", "OKP"]:
             _spec["crv"] = key.crv
+        elif key.kty == "AKP":
+            _spec["alg"] = key.alg
 
         key_spec.append(_spec)
 
@@ -1331,6 +1404,14 @@ def key_gen(type, **kwargs):
         keysize = kwargs.get("bytes", 24)
         randomkey = os.urandom(keysize)
         _key = SYMKey(key=randomkey, **kargs)
+    elif type.upper() == "AKP":
+        alg = kwargs.get("alg", "ML-DSA-65")
+        if alg not in ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]:
+            logging.error("Unknown AKP algorithm: %s", alg)
+            raise ValueError(f"Unknown AKP algorithm: {alg}")
+        if not MLDSA_AVAILABLE:
+            raise ValueError("ML-DSA not available - requires cryptography with BoringSSL/AWS-LC")
+        _key = new_akp_key(alg=alg, **kargs)
     else:
         logging.error("Unknown key type: %s", type)
         raise ValueError("Unknown key type: %s".format())
@@ -1367,5 +1448,7 @@ def key_by_alg(alg: str):
         return key_gen("OKP", crv=DEFAULT_OKP_CURVE)
     elif alg.startswith("HS"):
         return key_gen("sym")
+    elif alg.startswith("ML-DSA"):
+        return key_gen("AKP", alg=alg)
 
     raise ValueError(f"Don't know who to create a key to use with '{alg}'")

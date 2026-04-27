@@ -30,6 +30,7 @@ from cryptojwt.key_bundle import (
     unique_keys,
     update_key_bundle,
 )
+from cryptojwt.jwk.akp import AKPKey, new_akp_key, MLDSA_AVAILABLE
 
 __author__ = "Roland Hedberg"
 
@@ -1078,3 +1079,216 @@ def test_remote_dump_json():
 
     exp = kb.dump()
     assert json.dumps(exp)
+
+
+# =============================================================================
+# AKP (Algorithm Key Pair) KeyBundle Tests for ML-DSA
+# =============================================================================
+# These tests verify KeyBundle integration with ML-DSA algorithms.
+# These tests will FAIL until KeyBundle support is implemented.
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPKeyBundleBasics:
+    """Test basic KeyBundle operations with AKP keys."""
+
+    def test_key_bundle_init_with_akp_type(self):
+        """Test creating KeyBundle with AKP key type."""
+        kb = KeyBundle(keytype="AKP")
+        assert kb.keytype == "AKP"
+        assert len(kb) == 0
+
+    def test_key_bundle_add_akp_key(self):
+        """Test adding AKP key to KeyBundle."""
+        kb = KeyBundle(keytype="AKP")
+        key = new_akp_key("ML-DSA-65")
+        kb.append(key)
+        assert len(kb) == 1
+        assert isinstance(kb.keys()[0], AKPKey)
+
+    def test_key_bundle_akp_jwks_export(self):
+        """Test exporting KeyBundle with AKP keys to JWKS."""
+        kb = KeyBundle(keytype="AKP")
+        key = new_akp_key("ML-DSA-65")
+        kb.append(key)
+        
+        jwks_str = kb.jwks()
+        jwks = json.loads(jwks_str)
+        assert "keys" in jwks
+        assert len(jwks["keys"]) == 1
+        assert jwks["keys"][0]["kty"] == "AKP"
+        assert jwks["keys"][0]["alg"] == "ML-DSA-65"
+        assert "pub" in jwks["keys"][0]
+        assert "priv" not in jwks["keys"][0]
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPKeyBundleLoading:
+    """Test loading AKP keys from various sources."""
+
+    def test_key_bundle_from_jwks_file(self, tmp_path):
+        """Test loading AKP keys from JWKS JSON file."""
+        # Create temporary JWKS file
+        key = new_akp_key("ML-DSA-65")
+        jwks = {"keys": [key.serialize(private=False)]}
+        
+        jwks_file = tmp_path / "akp_jwks.json"
+        jwks_file.write_text(json.dumps(jwks))
+        
+        # Should load successfully
+        kb = keybundle_from_local_file(f"file://{jwks_file}", "jwks")
+        assert len(kb) == 1
+        assert kb.keys()[0].kty == "AKP"
+
+    def test_key_bundle_from_jwks_dict(self):
+        """Test loading AKP keys from JWKS dictionary."""
+        key = new_akp_key("ML-DSA-65")
+        jwks = {"keys": [key.serialize(private=False)]}
+        
+        kb = KeyBundle(keys=jwks)
+        assert len(kb) == 1
+        assert isinstance(kb.keys()[0], AKPKey)
+
+    @responses.activate
+    def test_key_bundle_remote_jwks(self):
+        """Test loading AKP keys from remote JWKS endpoint."""
+        key = new_akp_key("ML-DSA-65")
+        jwks = {"keys": [key.serialize(private=False)]}
+        
+        responses.add(
+            method="GET",
+            url="https://example.com/jwks.json",
+            json=jwks,
+            status=200
+        )
+        
+        kb = KeyBundle(source="https://example.com/jwks.json", httpc=requests.request)
+        kb._do_remote()
+        
+        assert len(kb) == 1
+        assert kb.keys()[0].alg == "ML-DSA-65"
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPKeyBundleGeneration:
+    """Test key generation via KeyBundle."""
+
+    def test_key_bundle_generate_akp_default(self):
+        """Test generating AKP key with default algorithm."""
+        kb = KeyBundle(keytype="AKP")
+        kb.generate()
+        assert len(kb) == 1
+        assert kb.keys()[0].alg == "ML-DSA-65"  # Default
+
+    def test_key_bundle_generate_akp_44(self):
+        """Test generating AKP key with ML-DSA-44."""
+        kb = KeyBundle(keytype="AKP")
+        kb.generate(alg="ML-DSA-44")
+        assert kb.keys()[0].alg == "ML-DSA-44"
+
+    def test_key_bundle_generate_akp_65(self):
+        """Test generating AKP key with ML-DSA-65."""
+        kb = KeyBundle(keytype="AKP")
+        kb.generate(alg="ML-DSA-65")
+        assert kb.keys()[0].alg == "ML-DSA-65"
+
+    def test_key_bundle_generate_akp_87(self):
+        """Test generating AKP key with ML-DSA-87."""
+        kb = KeyBundle(keytype="AKP")
+        kb.generate(alg="ML-DSA-87")
+        assert kb.keys()[0].alg == "ML-DSA-87"
+
+    def test_key_bundle_generate_akp_invalid_alg(self):
+        """Test that invalid algorithm raises error."""
+        kb = KeyBundle(keytype="AKP")
+        with pytest.raises(ValueError):
+            kb.generate(alg="ML-DSA-99")
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPKeyBundleRollover:
+    """Test key rotation with AKP keys."""
+
+    def test_key_rollover_akp(self):
+        """Test key rollover preserves AKP keys and adds new ones."""
+        # Create initial bundle with one AKP key
+        kb_0 = KeyBundle(keytype="AKP")
+        key1 = new_akp_key("ML-DSA-65", use="sig")
+        kb_0.append(key1)
+        
+        # Perform rollover
+        kb_1 = key_rollover(kb_0)
+        
+        # Should have 2 keys: 1 old (inactive) + 1 new (active)
+        assert len(kb_1.get(only_active=False)) == 2
+        assert len(kb_1.get()) == 1  # Only 1 active
+
+    def test_key_diff_akp_add(self):
+        """Test key_diff detects added AKP keys."""
+        kb = KeyBundle(keytype="AKP")
+        
+        spec = [{"type": "AKP", "alg": "ML-DSA-65", "use": ["sig"]}]
+        diff = key_diff(kb, spec)
+        
+        assert "add" in diff
+        assert len(diff["add"]) == 1
+        assert diff["add"][0].alg == "ML-DSA-65"
+
+    def test_key_diff_akp_remove(self):
+        """Test key_diff detects removed AKP keys."""
+        kb = KeyBundle(keytype="AKP")
+        key = new_akp_key("ML-DSA-65")
+        kb.append(key)
+        
+        # Empty spec - should remove the key
+        spec = []
+        diff = key_diff(kb, spec)
+        
+        assert "del" in diff
+        assert len(diff["del"]) == 1
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPBuildKeyBundle:
+    """Test build_key_bundle with AKP keys."""
+
+    def test_build_key_bundle_akp_generate(self):
+        """Test building bundle with generated AKP keys."""
+        spec = [{"type": "AKP", "alg": "ML-DSA-65", "use": ["sig"]}]
+        kb = build_key_bundle(spec)
+        
+        assert len(kb) == 1
+        assert kb.keys()[0].kty == "AKP"
+        assert kb.keys()[0].use == "sig"
+
+    def test_build_key_bundle_akp_from_file(self, tmp_path):
+        """Test building bundle from AKP JWKS file."""
+        key = new_akp_key("ML-DSA-65")
+        jwks = {"keys": [key.serialize(private=False)]}
+        
+        jwks_file = tmp_path / "test.jwks"
+        jwks_file.write_text(json.dumps(jwks))
+        
+        spec = [{"type": "AKP", "key": str(jwks_file), "use": ["sig"]}]
+        kb = build_key_bundle(spec)
+        
+        assert len(kb) == 1
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPMixedKeyTypes:
+    """Test AKP keys mixed with other key types."""
+
+    def test_key_bundle_mixed_rsa_and_akp(self):
+        """Test KeyBundle with both RSA and AKP keys."""
+        kb = KeyBundle()
+        rsa_key = new_rsa_key()
+        akp_key = new_akp_key("ML-DSA-65")
+        
+        kb.append(rsa_key)
+        kb.append(akp_key)
+        
+        assert len(kb) == 2
+        # Verify we can retrieve by key type
+        assert len([k for k in kb.keys() if k.kty == "RSA"]) == 1
+        assert len([k for k in kb.keys() if k.kty == "AKP"]) == 1

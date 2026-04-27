@@ -14,6 +14,7 @@ from cryptojwt.jws.exception import FormatError, NoSuitableSigningKeys, SignerAl
 from cryptojwt.jws.jws import JWS, SIGNER_ALGS, JWSig, factory
 from cryptojwt.jws.rsa import RSASigner
 from cryptojwt.jws.utils import left_hash, parse_rsa_algorithm
+from cryptojwt.jwk.akp import new_akp_key, MLDSA_AVAILABLE
 from cryptojwt.key_bundle import KeyBundle
 from cryptojwt.utils import (
     as_bytes,
@@ -1113,3 +1114,221 @@ def test_is_json_jws():
     )
 
     assert is_json_jws(_jwt)
+
+
+# =============================================================================
+# ML-DSA JWS Tests
+# =============================================================================
+# Tests for ML-DSA-44, ML-DSA-65, ML-DSA-87 signing and verification.
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestMLDSASignVerify:
+    """Test JWS signing and verification with ML-DSA algorithms."""
+
+    @pytest.mark.parametrize("alg", ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"])
+    def test_mldsa_sign_verify_compact(self, alg):
+        """Test basic sign and verify with compact serialization."""
+        key = new_akp_key(alg)
+        payload = {"sub": "user123", "iss": "test.example.com"}
+        
+        jws = JWS(payload, alg=alg)
+        token = jws.sign_compact(keys=[key])
+        
+        # Verify
+        jws_v = JWS(alg=alg)
+        verified = jws_v.verify_compact(token, keys=[key])
+        assert verified == payload
+
+    @pytest.mark.parametrize("alg", ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"])
+    def test_mldsa_sign_verify_bytes_payload(self, alg):
+        """Test signing bytes payload (returns as string)."""
+        key = new_akp_key(alg)
+        payload = b"Hello, ML-DSA World!"
+        
+        jws = JWS(payload, alg=alg)
+        token = jws.sign_compact(keys=[key])
+        
+        jws_v = JWS(alg=alg)
+        verified = jws_v.verify_compact(token, keys=[key])
+        # JWS returns string for bytes payload (standard JWT behavior)
+        assert verified == payload.decode('utf-8')
+
+    @pytest.mark.parametrize("alg", ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"])
+    def test_mldsa_sign_verify_string_payload(self, alg):
+        """Test signing string payload."""
+        key = new_akp_key(alg)
+        payload = "Hello, World! 世界 Ñoño 🌍"
+        
+        jws = JWS(payload, alg=alg)
+        token = jws.sign_compact(keys=[key])
+        
+        jws_v = JWS(alg=alg)
+        verified = jws_v.verify_compact(token, keys=[key])
+        assert verified == payload
+
+    @pytest.mark.parametrize("alg", ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"])
+    def test_mldsa_sign_with_kid(self, alg):
+        """Test that JWT includes kid in header."""
+        key = new_akp_key(alg, kid="my-key-id")
+        payload = {"test": "data"}
+        
+        jws = JWS(payload, alg=alg)
+        token = jws.sign_compact(keys=[key])
+        
+        # Parse header
+        import base64
+        header_b64 = token.split(".")[0]
+        padding = 4 - len(header_b64) % 4
+        if padding != 4:
+            header_b64 += "=" * padding
+        header = json.loads(base64.urlsafe_b64decode(header_b64))
+        
+        assert header["kid"] == "my-key-id"
+        assert header["alg"] == alg
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestMLDSASignatureProperties:
+    """Test ML-DSA signature properties."""
+
+    def test_mldsa_signatures_are_non_deterministic(self):
+        """Test that ML-DSA signatures use randomness (different each time)."""
+        key = new_akp_key("ML-DSA-65")
+        msg = {"test": "message"}
+        
+        jws1 = JWS(msg, alg="ML-DSA-65")
+        token1 = jws1.sign_compact(keys=[key])
+        
+        jws2 = JWS(msg, alg="ML-DSA-65")
+        token2 = jws2.sign_compact(keys=[key])
+        
+        # Signatures should be different
+        assert token1 != token2
+        
+        # But both should verify
+        jws_v = JWS(alg="ML-DSA-65")
+        assert jws_v.verify_compact(token1, keys=[key]) == msg
+        assert jws_v.verify_compact(token2, keys=[key]) == msg
+
+    @pytest.mark.parametrize("alg,expected_size", [
+        ("ML-DSA-44", 2420),
+        ("ML-DSA-65", 3309),
+        ("ML-DSA-87", 4627),
+    ])
+    def test_mldsa_signature_size(self, alg, expected_size):
+        """Test signature sizes match FIPS 204."""
+        key = new_akp_key(alg)
+        
+        jws = JWS(b"test", alg=alg)
+        token = jws.sign_compact(keys=[key])
+        
+        # Extract and decode signature
+        import base64
+        sig_b64 = token.split(".")[2]
+        padding = 4 - len(sig_b64) % 4
+        if padding != 4:
+            sig_b64 += "=" * padding
+        sig = base64.urlsafe_b64decode(sig_b64)
+        
+        assert len(sig) == expected_size
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestMLDSAWrongKeyRejection:
+    """Test that verification fails with wrong keys."""
+
+    def test_mldsa_verify_fails_with_different_key(self):
+        """Test verification fails when using different key."""
+        from cryptojwt.jws.exception import NoSuitableSigningKeys
+        
+        key1 = new_akp_key("ML-DSA-65")
+        key2 = new_akp_key("ML-DSA-65")
+        
+        payload = {"test": "data"}
+        jws = JWS(payload, alg="ML-DSA-65")
+        token = jws.sign_compact(keys=[key1])
+        
+        # Should fail with different key (kid mismatch or bad signature)
+        jws_v = JWS(alg="ML-DSA-65")
+        with pytest.raises((BadSignature, NoSuitableSigningKeys)):
+            jws_v.verify_compact(token, keys=[key2])
+
+    def test_mldsa_verify_fails_with_wrong_algorithm(self):
+        """Test verification fails with wrong algorithm."""
+        key = new_akp_key("ML-DSA-65")
+        
+        payload = {"test": "data"}
+        jws = JWS(payload, alg="ML-DSA-65")
+        token = jws.sign_compact(keys=[key])
+        
+        # Try to verify with wrong algorithm
+        jws_v = JWS(alg="ML-DSA-44")  # Wrong alg
+        with pytest.raises(Exception):  # Should fail
+            jws_v.verify_compact(token, keys=[key])
+
+    def test_mldsa_verify_fails_with_tampered_payload(self):
+        """Test verification fails with tampered payload."""
+        key = new_akp_key("ML-DSA-65")
+        
+        payload = {"test": "data"}
+        jws = JWS(payload, alg="ML-DSA-65")
+        token = jws.sign_compact(keys=[key])
+        
+        # Tamper with payload
+        import base64
+        parts = token.split(".")
+        tampered_payload = base64.urlsafe_b64encode(b'{"test": "hacked"}').decode().rstrip("=")
+        tampered_token = f"{parts[0]}.{tampered_payload}.{parts[2]}"
+        
+        jws_v = JWS(alg="ML-DSA-65")
+        with pytest.raises(BadSignature):
+            jws_v.verify_compact(tampered_token, keys=[key])
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestMLDSAMultipleKeys:
+    """Test JWS with multiple keys in key set."""
+
+    def test_mldsa_verify_with_key_set(self):
+        """Test verification finds correct key from set."""
+        key1 = new_akp_key("ML-DSA-65", kid="key1")
+        key2 = new_akp_key("ML-DSA-65", kid="key2")
+        
+        payload = {"test": "data"}
+        jws = JWS(payload, alg="ML-DSA-65")
+        token = jws.sign_compact(keys=[key1])
+        
+        # Verify with both keys - should find the right one
+        jws_v = JWS(alg="ML-DSA-65")
+        verified = jws_v.verify_compact(token, keys=[key1, key2])
+        assert verified == payload
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestMLDSAFactory:
+    """Test JWS factory with ML-DSA."""
+
+    @pytest.mark.parametrize("alg", ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"])
+    def test_factory_recognizes_mldsa_token(self, alg):
+        """Test factory recognizes ML-DSA signed tokens."""
+        key = new_akp_key(alg)
+        payload = {"test": "data"}
+        
+        jws = JWS(payload, alg=alg)
+        token = jws.sign_compact(keys=[key])
+        
+        # Factory should recognize it
+        result = factory(token)
+        assert result is not None
+        assert isinstance(result, JWS)
+
+    def test_is_compact_jws_mldsa(self):
+        """Test is_compact_jws recognizes ML-DSA tokens."""
+        from cryptojwt.utils import is_compact_jws
+        
+        key = new_akp_key("ML-DSA-65")
+        jws = JWS({"test": "data"}, alg="ML-DSA-65")
+        token = jws.sign_compact(keys=[key])
+        
+        assert is_compact_jws(token)

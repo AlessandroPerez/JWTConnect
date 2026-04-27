@@ -239,6 +239,27 @@ class AKPKey(AsymmetricKey):
 
         return self
 
+    def load(self, filename, passphrase=None):
+        """
+        Load an AKP key from a file.
+
+        :param filename: File name containing PEM-encoded key
+        :param passphrase: Passphrase for encrypted PEM files
+        :return: Reference to this instance
+        """
+        # Try to load as private key first
+        try:
+            key = import_private_akp_key_from_file(filename, passphrase)
+            self.__dict__.update(key.__dict__)
+            return self
+        except Exception:
+            pass
+
+        # Try to load as public key
+        key = import_public_akp_key_from_file(filename)
+        self.__dict__.update(key.__dict__)
+        return self
+
     def signing_key(self):
         """
         Get a key appropriate for signing a message.
@@ -392,3 +413,106 @@ if __name__ == "__main__":
             print("  Key equality: OK")
 
         print("\nAll tests passed!")
+
+
+def import_private_akp_key_from_file(filename, passphrase=None):
+    """
+    Read a private AKP key from a PEM file.
+
+    :param filename: The name of the file
+    :param passphrase: A pass phrase to use to unpack the PEM file
+    :return: AKPKey instance
+    :raises ValueError: If the key is not an AKP key
+    :raises FileNotFoundError: If the file does not exist
+    """
+    if not MLDSA_AVAILABLE:
+        raise UnsupportedAlgorithm(
+            "ML-DSA requires cryptography>=47.0.0 compiled with BoringSSL or AWS-LC"
+        )
+
+    # Check if DER format
+    if filename.endswith('.der'):
+        raise NotImplementedError("DER format not yet supported")
+
+    from .x509 import import_private_key_from_pem_file
+
+    private_key = import_private_key_from_pem_file(filename, passphrase)
+
+    # Check if it's an ML-DSA key
+    if hasattr(private_key, 'private_bytes_raw'):
+        return AKPKey().load_key(private_key)
+    else:
+        raise ValueError("Not an AKP key")
+
+
+def import_public_akp_key_from_file(filename):
+    """
+    Read a public AKP key from a PEM file.
+
+    :param filename: The name of the file
+    :return: AKPKey instance
+    :raises ValueError: If the key is not an AKP key
+    :raises FileNotFoundError: If the file does not exist
+    """
+    if not MLDSA_AVAILABLE:
+        raise UnsupportedAlgorithm(
+            "ML-DSA requires cryptography>=47.0.0 compiled with BoringSSL or AWS-LC"
+        )
+
+    # Check if DER format
+    if filename.endswith('.der'):
+        raise NotImplementedError("DER format not yet supported")
+
+    from .x509 import import_public_key_from_pem_file
+
+    public_key = import_public_key_from_pem_file(filename)
+
+    # Check if it's an ML-DSA key
+    for alg_name, (priv_cls, pub_cls) in MLDSA_ALG_MAP.items():
+        if isinstance(public_key, pub_cls):
+            return AKPKey().load_key(public_key)
+
+    raise ValueError("Not an AKP public key")
+
+
+def import_akp_key_from_pem_data(pem_data):
+    """
+    Import an AKP key from PEM-encoded data.
+
+    :param pem_data: PEM-encoded key data (string or bytes)
+    :return: AKPKey instance
+    :raises ValueError: If the key cannot be imported
+    """
+    if not MLDSA_AVAILABLE:
+        raise UnsupportedAlgorithm(
+            "ML-DSA requires cryptography>=47.0.0 compiled with BoringSSL or AWS-LC"
+        )
+
+    from cryptography.hazmat.primitives import serialization
+
+    if isinstance(pem_data, str):
+        pem_data = pem_data.encode()
+
+    # Try to load as private key first
+    try:
+        key = serialization.load_pem_private_key(pem_data, password=None)
+        return AKPKey().load_key(key)
+    except Exception:
+        pass
+
+    # Try to load as public key
+    try:
+        key = serialization.load_pem_public_key(pem_data)
+        return AKPKey().load_key(key)
+    except Exception:
+        raise ValueError("Unable to import AKP key from PEM data")
+
+
+def import_akp_key_from_dict(jwk_dict):
+    """
+    Import an AKP key from a JWK dictionary.
+
+    :param jwk_dict: Dictionary containing AKP key parameters
+    :return: AKPKey instance
+    """
+    return AKPKey(**jwk_dict)
