@@ -28,6 +28,7 @@ from cryptojwt.jwk.rsa import (
     new_rsa_key,
 )
 from cryptojwt.jwk.x509 import import_public_key_from_pem_file, x5t_calculation
+from cryptojwt.jwk.akp import AKPKey, new_akp_key, MLDSA_AVAILABLE, MLDSA_PUBKEY_SIZES, MLDSA_SEED_SIZE
 from cryptojwt.utils import (
     as_bytes,
     as_unicode,
@@ -868,3 +869,336 @@ def test_jwk_set():
     assert key2 in keyset
     assert key3 in keyset
     assert key4 not in keyset
+
+
+# =============================================================================
+# AKP (Algorithm Key Pair) Tests for ML-DSA
+# =============================================================================
+# These tests cover ML-DSA-44, ML-DSA-65, and ML-DSA-87 algorithms
+# as specified in FIPS 204 and draft-ietf-cose-dilithium
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPKeyGeneration:
+    """Test AKP key generation for all ML-DSA variants."""
+
+    @pytest.mark.parametrize("alg", ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"])
+    def test_new_akp_key(self, alg):
+        """Test generating new AKP keys for all algorithms."""
+        key = new_akp_key(alg)
+        assert isinstance(key, AKPKey)
+        assert key.kty == "AKP"
+        assert key.alg == alg
+        assert key.has_private_key()
+
+    def test_new_akp_key_with_use(self):
+        """Test generating AKP key with use parameter."""
+        key = new_akp_key("ML-DSA-65", use="sig")
+        assert key.use == "sig"
+
+    def test_new_akp_key_with_kid(self):
+        """Test generating AKP key with explicit kid."""
+        key = new_akp_key("ML-DSA-65", kid="my-custom-kid")
+        assert key.kid == "my-custom-kid"
+
+    def test_new_akp_key_auto_kid(self):
+        """Test that AKP key auto-generates kid if not provided."""
+        key = new_akp_key("ML-DSA-65")
+        assert key.kid is not None
+        assert len(key.kid) > 0
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPKeySerialization:
+    """Test AKP JWK serialization and deserialization."""
+
+    @pytest.mark.parametrize("alg", ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"])
+    def test_akp_key_serialize_public(self, alg):
+        """Test public key serialization."""
+        key = new_akp_key(alg)
+        jwk = key.serialize(private=False)
+        
+        assert jwk["kty"] == "AKP"
+        assert jwk["alg"] == alg
+        assert "pub" in jwk
+        assert "priv" not in jwk
+        assert "kid" in jwk
+
+    @pytest.mark.parametrize("alg", ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"])
+    def test_akp_key_serialize_private(self, alg):
+        """Test private key serialization."""
+        key = new_akp_key(alg)
+        jwk = key.serialize(private=True)
+        
+        assert jwk["kty"] == "AKP"
+        assert jwk["alg"] == alg
+        assert "pub" in jwk
+        assert "priv" in jwk
+        assert "kid" in jwk
+
+    def test_akp_key_serialize_with_use(self):
+        """Test serialization includes use parameter."""
+        key = new_akp_key("ML-DSA-65", use="sig")
+        jwk = key.serialize(private=False)
+        assert jwk.get("use") == "sig"
+
+    def test_akp_key_deserialize_from_jwk(self):
+        """Test deserialization from JWK dictionary."""
+        key1 = new_akp_key("ML-DSA-65")
+        jwk = key1.serialize(private=True)
+        
+        key2 = AKPKey(**jwk)
+        assert key2.alg == key1.alg
+        assert key2.pub == key1.pub
+        assert key2.priv == key1.priv
+
+    def test_akp_key_deserialize_from_jwk_public_only(self):
+        """Test deserialization from public-only JWK."""
+        key1 = new_akp_key("ML-DSA-65")
+        pub_jwk = key1.serialize(private=False)
+        
+        key2 = AKPKey(**pub_jwk)
+        assert key2.alg == key1.alg
+        assert key2.pub == key1.pub
+        assert not key2.has_private_key()
+
+    def test_akp_key_roundtrip(self):
+        """Test serialize/deserialize roundtrip preserves key."""
+        key1 = new_akp_key("ML-DSA-65")
+        priv_jwk = key1.serialize(private=True)
+        
+        # Deserialize
+        key2 = AKPKey(**priv_jwk)
+        
+        # Verify they produce same JWK
+        assert key2.serialize(private=True) == priv_jwk
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPKeyComparison:
+    """Test AKP key equality and hashing."""
+
+    def test_akp_key_equal_same_key(self):
+        """Test same key is equal to itself."""
+        key = new_akp_key("ML-DSA-65")
+        key2 = AKPKey(**key.serialize(private=True))
+        assert key == key2
+
+    def test_akp_key_not_equal_different_keys(self):
+        """Test different keys are not equal."""
+        key1 = new_akp_key("ML-DSA-65")
+        key2 = new_akp_key("ML-DSA-65")
+        assert key1 != key2
+
+    def test_akp_key_not_equal_different_alg(self):
+        """Test keys with different algorithms are not equal."""
+        key1 = new_akp_key("ML-DSA-44")
+        key2 = new_akp_key("ML-DSA-65")
+        assert key1 != key2
+
+    def test_akp_key_not_equal_different_type(self):
+        """Test AKP key is not equal to other key types."""
+        akp_key = new_akp_key("ML-DSA-65")
+        rsa_key = new_rsa_key()
+        assert akp_key != rsa_key
+
+    def test_akp_key_hash_consistency(self):
+        """Test key hash is consistent."""
+        key = new_akp_key("ML-DSA-65")
+        hash1 = hash(key)
+        hash2 = hash(key)
+        assert hash1 == hash2
+
+    def test_akp_key_in_set(self):
+        """Test AKP keys can be added to sets."""
+        key1 = new_akp_key("ML-DSA-65", kid="key1")
+        key2 = new_akp_key("ML-DSA-65", kid="key2")
+        key3 = AKPKey(**key1.serialize(private=True))
+        
+        keyset = set()
+        keyset.add(key1)
+        keyset.add(key2)
+        keyset.add(key3)  # Duplicate, should not add
+        
+        assert len(keyset) == 2
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPKeyFromJWKDict:
+    """Test key_from_jwk_dict integration with AKP keys."""
+
+    @pytest.mark.parametrize("alg", ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"])
+    def test_key_from_jwk_dict_akp(self, alg):
+        """Test key_from_jwk_dict creates AKPKey from JWK."""
+        key1 = new_akp_key(alg)
+        jwk = key1.serialize(private=True)
+        
+        key2 = key_from_jwk_dict(jwk)
+        assert isinstance(key2, AKPKey)
+        assert key2.alg == alg
+
+    def test_key_from_jwk_dict_akp_public(self):
+        """Test key_from_jwk_dict creates public AKPKey."""
+        key1 = new_akp_key("ML-DSA-65")
+        pub_jwk = key1.serialize(private=False)
+        
+        key2 = key_from_jwk_dict(pub_jwk)
+        assert isinstance(key2, AKPKey)
+        assert not key2.has_private_key()
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPKeyUsage:
+    """Test AKP key usage restrictions."""
+
+    def test_akp_key_appropriate_for_sign(self):
+        """Test AKP key is appropriate for signing."""
+        key = new_akp_key("ML-DSA-65", use="sig")
+        assert key.appropriate_for("sign")
+
+    def test_akp_key_appropriate_for_verify(self):
+        """Test AKP key is appropriate for verification."""
+        key = new_akp_key("ML-DSA-65", use="sig")
+        assert key.appropriate_for("verify")
+
+    def test_akp_key_not_appropriate_for_encrypt(self):
+        """Test AKP key is not appropriate for encryption."""
+        key = new_akp_key("ML-DSA-65", use="sig")
+        assert not key.appropriate_for("encrypt")
+
+    def test_akp_key_not_appropriate_for_decrypt(self):
+        """Test AKP key is not appropriate for decryption."""
+        key = new_akp_key("ML-DSA-65", use="sig")
+        assert not key.appropriate_for("decrypt")
+
+    def test_akp_key_appropriate_for_verify_public_only(self):
+        """Test public-only AKP key is appropriate for verify."""
+        key = new_akp_key("ML-DSA-65")
+        pub_jwk = key.serialize(private=False)
+        pub_key = key_from_jwk_dict(pub_jwk)
+        assert pub_key.appropriate_for("verify")
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPFIPS204Compliance:
+    """Test strict FIPS 204 compliance (key sizes)."""
+
+    @pytest.mark.parametrize(
+        "alg,pub_size,sig_size",
+        [
+            ("ML-DSA-44", 1312, 2420),
+            ("ML-DSA-65", 1952, 3309),
+            ("ML-DSA-87", 2592, 4627),
+        ],
+    )
+    def test_akp_key_sizes(self, alg, pub_size, sig_size):
+        """Test exact key sizes per FIPS 204."""
+        from cryptography.hazmat.primitives.asymmetric import mldsa
+        
+        if not MLDSA_AVAILABLE:
+            pytest.skip("ML-DSA not available")
+            
+        priv_cls, _ = {"ML-DSA-44": (mldsa.MLDSA44PrivateKey, mldsa.MLDSA44PublicKey),
+                       "ML-DSA-65": (mldsa.MLDSA65PrivateKey, mldsa.MLDSA65PublicKey),
+                       "ML-DSA-87": (mldsa.MLDSA87PrivateKey, mldsa.MLDSA87PublicKey)}[alg]
+        key = priv_cls.generate()
+        
+        # Test public key size
+        pub_bytes = key.public_key().public_bytes_raw()
+        assert len(pub_bytes) == pub_size
+        
+        # Test private seed size (always 32 bytes)
+        seed = key.private_bytes_raw()
+        assert len(seed) == 32
+
+    @pytest.mark.parametrize(
+        "alg,expected_size",
+        [
+            ("ML-DSA-44", 1312),
+            ("ML-DSA-65", 1952),
+            ("ML-DSA-87", 2592),
+        ],
+    )
+    def test_akp_key_len(self, alg, expected_size):
+        """Test key_len() returns correct value."""
+        key = new_akp_key(alg)
+        assert key.key_len() == expected_size
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPThumbprint:
+    """Test AKP key thumbprints (RFC 7638)."""
+
+    def test_akp_key_thumbprint(self):
+        """Test thumbprint generation."""
+        key = new_akp_key("ML-DSA-65")
+        thumb = key.thumbprint("SHA-256")
+        assert thumb is not None
+        assert len(thumb) > 0
+
+    def test_akp_key_thumbprint_consistency(self):
+        """Test thumbprint is consistent for same key."""
+        key = new_akp_key("ML-DSA-65")
+        thumb1 = key.thumbprint("SHA-256")
+        thumb2 = key.thumbprint("SHA-256")
+        assert thumb1 == thumb2
+
+    def test_akp_key_add_kid(self):
+        """Test kid generation from thumbprint."""
+        key = new_akp_key("ML-DSA-65")
+        key.kid = ""
+        key.add_kid()
+        assert key.kid is not None
+        assert len(key.kid) > 0
+
+    def test_akp_key_different_thumbprints(self):
+        """Test different keys have different thumbprints."""
+        key1 = new_akp_key("ML-DSA-65")
+        key2 = new_akp_key("ML-DSA-65")
+        thumb1 = key1.thumbprint("SHA-256")
+        thumb2 = key2.thumbprint("SHA-256")
+        assert thumb1 != thumb2
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPJWKWrap:
+    """Test jwk_wrap integration with AKP keys."""
+
+    def test_jwk_wrap_akp_private(self):
+        """Test wrapping private AKP key."""
+        from cryptography.hazmat.primitives.asymmetric import mldsa
+        
+        priv_key = mldsa.MLDSA65PrivateKey.generate()
+        wrapped = jwk_wrap(priv_key)
+        assert isinstance(wrapped, AKPKey)
+        assert wrapped.has_private_key()
+
+    def test_jwk_wrap_akp_public(self):
+        """Test wrapping public AKP key."""
+        from cryptography.hazmat.primitives.asymmetric import mldsa
+        
+        priv_key = mldsa.MLDSA65PrivateKey.generate()
+        pub_key = priv_key.public_key()
+        wrapped = jwk_wrap(pub_key)
+        assert isinstance(wrapped, AKPKey)
+        assert not wrapped.has_private_key()
+
+
+@pytest.mark.skipif(not MLDSA_AVAILABLE, reason="ML-DSA not available")
+class TestAKPErrorHandling:
+    """Test AKP error handling and validation."""
+
+    def test_akp_key_invalid_algorithm(self):
+        """Test that invalid algorithm raises error."""
+        with pytest.raises(UnsupportedAlgorithm):
+            AKPKey(kty="AKP", alg="ML-DSA-99")
+
+    def test_akp_key_wrong_kty(self):
+        """Test that wrong kty raises error."""
+        with pytest.raises(ValueError):
+            AKPKey(kty="RSA", alg="ML-DSA-65")
+
+    def test_akp_key_missing_required_fields(self):
+        """Test that missing required fields raises error."""
+        with pytest.raises(Exception):
+            AKPKey(kty="AKP")  # Missing alg and pub
