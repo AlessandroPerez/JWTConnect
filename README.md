@@ -160,10 +160,6 @@ pip install cryptography --no-binary cryptography
 pip install requests pytest
 ```
 
-#### Option 3: Wait for OpenSSL 4.0
-
-OpenSSL 4.0 will include ML-DSA support. Once released, standard PyPI wheels will work without custom builds.
-
 ---
 
 ## Usage Examples
@@ -402,10 +398,6 @@ python -m pytest tests/ --cov=cryptojwt --cov-report=html
 - ✅ **302 tests PASSING**
 - ⏭️ **4 tests SKIPPED** (expected - unsupported features)
 
-**Skipped Tests:**
-- Ed448/X448 curves (OpenSSL backend limitation)
-- DER format import (optional feature)
-
 ---
 
 ## Troubleshooting
@@ -457,32 +449,6 @@ key = new_akp_key("ML-DSA-99")  # Invalid algorithm
 
 ---
 
-## Performance
-
-Benchmarks on typical hardware:
-
-| Operation | ML-DSA-44 | ML-DSA-65 | ML-DSA-87 |
-|-----------|-----------|-----------|-----------|
-| Key Generation | ~0.5ms | ~0.8ms | ~1.2ms |
-| Sign | ~1.2ms | ~1.6ms | ~2.1ms |
-| Verify | ~0.3ms | ~0.4ms | ~0.6ms |
-
-*Note: Performance depends on cryptography backend (AWS-LC/BoringSSL vs OpenSSL 4.0)*
-
----
-
-## Security Considerations
-
-1. **Context String**: ML-DSA requires an empty context string (`b""`) per RFC. The implementation enforces this.
-
-2. **Non-Deterministic Signatures**: ML-DSA signatures are randomized. Signing the same message twice produces different signatures (both valid).
-
-3. **Key Sizes**: ML-DSA public keys (1312-2592 bytes) and signatures (2420-4627 bytes) are larger than classical algorithms. Ensure your systems can handle the increased size.
-
-4. **Backend Security**: ML-DSA requires a post-quantum capable cryptographic backend (AWS-LC or BoringSSL). Standard OpenSSL does not yet support ML-DSA.
-
----
-
 ## References
 
 - [FIPS 204 - Module-Lattice-Based Digital Signature Standard](https://csrc.nist.gov/pubs/fips/204/final)
@@ -493,9 +459,3 @@ Benchmarks on typical hardware:
 - [RFC 7515 - JWS](https://tools.ietf.org/html/rfc7515)
 - [RFC 7517 - JWK](https://tools.ietf.org/html/rfc7517)
 - [RFC 7518 - JWA](https://tools.ietf.org/html/rfc7518)
-
----
-
-## License
-
-Apache 2.0 - See LICENSE file for details.
